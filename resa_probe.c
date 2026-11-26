@@ -8,7 +8,7 @@
  * What v2 showed: the engine's per-frame GL calls are NOT plain imports (only 8 setup calls were seen).
  * So v3 tries every route an engine can use to reach GL, and then traces whole frames:
  *   A. fishhook on imports                      (as v2)
- *   B. dlsym() wrapper                          -> every gl*/CV* name the engine looks up is handed a counting wrapper
+ *   B. dlsym() wrapper                          -> every gl* / CV* name the engine looks up is handed a counting wrapper
  *   C. data-segment pointer scan of alyn_resa   -> finds (and re-points) GL function pointers cached before B was in place
  *   D. ObjC swizzles (data-only, no code patching): -[EAGLContext presentRenderbuffer:], +setCurrentContext:,
  *      -renderbufferStorage:fromDrawable:, -[CAMetalLayer nextDrawable], the ReSA CAMetalDisplayLink delegate
@@ -1561,7 +1561,7 @@ static void install_hooks(void) {
 /* ------------------------------------------------------ watchdog thread */
 static void *watchdog_main(void *arg) {
     (void)arg;
-    int b_load = 0, b_gl = 0, b_first = 0, st6 = 0, st20 = 0, objc_done = 0, k = 0, open = 0, armed = 0, scans = 0, done = 0;
+    int b_load = 0, b_gl = 0, st6 = 0, st20 = 0, objc_done = 0, k = 0, open = 0, armed = 0, scans = 0, done = 0;
     double t_open = 0, t_arm = 0, earliest = WIN_MIN_START[0], t_due = -1, last_busy_check = 0;
     int busy_secs = 0;
     uint32_t last_imgs = 0;
