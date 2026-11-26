@@ -25,4 +25,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: resa_ao_probe-dylib
-          path: .theos/obj/resa_ao_probe.dylib
+          path: "**/*.dylib"
