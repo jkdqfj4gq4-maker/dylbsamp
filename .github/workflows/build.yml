@@ -21,8 +21,13 @@ jobs:
           make clean
           make
 
+      - name: Extract Dylib from hidden folder
+        run: |
+          mkdir -p output
+          find .theos -name "*.dylib" -exec cp {} output/ \;
+
       - name: Upload dylib artifact
         uses: actions/upload-artifact@v4
         with:
           name: resa_ao_probe-dylib
-          path: "**/*.dylib"
+          path: output/
