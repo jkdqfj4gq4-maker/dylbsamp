@@ -1,0 +1,9 @@
+Package: com.dylbsamp.resa_ao_probe
+Name: resa_ao_probe
+Version: 1.0
+Architecture: iphoneos-arm
+Description: Diagnostic probe for ReSALauncher depth attachment
+Maintainer: dylbsamp
+Author: dylbsamp
+Section: Tweaks
+Depends: mobilesubstrate
