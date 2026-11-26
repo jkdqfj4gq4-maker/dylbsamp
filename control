@@ -1,8 +1,8 @@
-Package: com.dylbsamp.resa_ao_probe
-Name: resa_ao_probe
-Version: 1.0
+Package: com.dylbsamp.resa_ao
+Name: resa_ao
+Version: 1.0.0
 Architecture: iphoneos-arm
-Description: Diagnostic probe for ReSALauncher depth attachment
+Description: Screen-space ambient occlusion (SSAO) for ReSALauncher
 Maintainer: dylbsamp
 Author: dylbsamp
 Section: Tweaks
