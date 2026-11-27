@@ -651,36 +651,12 @@ static const char FS_BLUR_SRC[] =
     "  oColor = vec4(sum / ws, c0.gba);\n"
     "}\n";
 
-/* pass 2b: screen-space reflections (SSR) of the world on flat, upward-facing surfaces (roads, pavements, floors, car roofs).
- *
- * Inputs : unit 0 = depth copy (uDepth), unit 2 = scene colour copy (uScene).   Uniforms: uProj/uSize via set_common(),
- *          uSsr = (intensity, max ray length in metres, ray-march steps).
- * Output : rgb = the light to ADD to the pixel (0 = no reflection).  The composite pass adds it AFTER the AO darkening.
- *          It is written as a screen blend  refl * (1 - scene),  so it can never push a pixel past white and bright
- *          surfaces (concrete, road markings) get less than dark asphalt, like a real reflection does.
- *
- * How it works, per pixel:
- *   1. normal from depth (same method as the AO pass); only surfaces whose normal points "up" in view space are used
- *      (view +Y = up, camera roll ~0: true for the engine's cameras; pitch up to ~35 deg is full strength, then it fades)
- *   2. mirror the view ray about that normal, march the reflected ray through the depth buffer in screen space
- *      (perspective-correct 1/z interpolation, samples dense near the pixel and sparse far away, per-pixel jitter),
- *      accept a hit only if the ray goes from in front of a surface to just behind it, refine it by bisection, and
- *      reject hits on surfaces facing away from the ray (that is what stops the road reflecting itself)
- *   3. colour at the hit (small cross blur that grows with ray length = glossy, not a mirror), faded near the screen edges
- *   4. no hit within the ray length: fall back to the far environment = the screen pixel in the direction of the ray
- *      (for a level camera that is the mirror image of the sky/horizon; above the top of the screen: the top row),
- *      blended in smoothly as the hit gets far
- *   5. strength = ssr_intensity * Fresnel (Schlick, F0 0.15: more reflection at grazing angles) * flatness * material,
- *      where "material" removes most of the reflection from green (grass, bushes) surfaces
- */
 static const char FS_SSR_SRC[] =
     GLSL_HDR GLSL_COMMON
     "uniform sampler2D uScene;\n"
     "uniform vec3 uSsr;\n"                                  /* x = intensity, y = max ray length (m), z = steps */
     "float ign(vec2 p){ return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }\n"
-    /* view-space point -> continuous pixel coordinates (pixel centres are at +0.5) */
     "vec2 toPx(vec3 q){ return (q.xy / (uProj.xy * q.z) * 0.5 + 0.5) * uSize.xy; }\n"
-    /* surface normal from depth, facing the camera (same neighbour choice as the AO pass: never differences across an edge) */
     "vec3 nrmFrom(ivec2 ip, vec3 P){\n"
     "  ivec2 sz = ivec2(uSize.xy);\n"
     "  vec3 Pl = posAt(ip + ivec2(-1, 0)); vec3 Pr = posAt(ip + ivec2(1, 0));\n"
@@ -696,31 +672,26 @@ static const char FS_SSR_SRC[] =
     "  vec3 N = cl > 1e-12 ? cr / cl : vec3(0.0, 0.0, -1.0);\n"
     "  return dot(N, P) > 0.0 ? -N : N;\n"
     "}\n"
-    "float edgeFade(vec2 uv){ return smoothstep(0.0, 0.08, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y))); }\n"
+    "float edgeFade(vec2 uv){ return smoothstep(0.0, 0.15, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y))); }\n"
     "void main(){\n"
-    "  oColor = vec4(0.0, 0.0, 0.0, 1.0);\n"                 /* default: nothing to add */
+    "  oColor = vec4(0.0, 0.0, 0.0, 1.0);\n"
     "  ivec2 ip = ivec2(gl_FragCoord.xy);\n"
     "  if (texelFetch(uDepth, ip, 0).r >= 0.999999) return;\n"     /* sky */
     "  vec3 P = posAt(ip);\n"
     "  if (P.z > 300.0) return;\n"
-    /* ---- is this a floor? */
     "  vec3 N = nrmFrom(ip, P);\n"
-    "  float flo = smoothstep(0.62, 0.82, N.y);\n"
+    "  float flo = smoothstep(0.62, 0.82, N.y);\n"                 /* only flat ground */
     "  if (flo <= 0.0) return;\n"
-    /* ---- how strong: material (not grass), Fresnel, user intensity */
     "  vec3 base = texelFetch(uScene, ip, 0).rgb;\n"
     "  float veg = smoothstep(0.02, 0.12, base.g - max(base.r, base.b));\n"
-    "  float mx  = max(base.r, max(base.g, base.b));\n"
-    "  float sat = (mx - min(base.r, min(base.g, base.b))) / max(mx, 0.05);\n"
-    "  float mat = (1.0 - 0.9 * veg) * (1.0 - 0.5 * smoothstep(0.35, 0.7, sat));\n"
+    "  float mat = (1.0 - 0.9 * veg);\n"                           /* less reflection on grass */
     "  vec3 V = normalize(P);\n"
     "  float NoV = clamp(-dot(N, V), 0.0, 1.0);\n"
-    "  float fr = pow(1.0 - NoV, 5.0);\n"
+    "  float fr = pow(1.0 - NoV, 5.0);\n"                          /* Fresnel: grazing angles reflect more */
     "  float wgt = uSsr.x * (0.15 + 0.85 * fr) * flo * mat;\n"
     "  if (wgt < 0.004) return;\n"
-    /* ---- the reflected ray, clipped to the near plane and to the screen */
     "  vec3 R = reflect(V, N);\n"
-    "  vec3 q0 = P + N * (0.03 + 0.004 * P.z);\n"            /* start a little above the surface */
+    "  vec3 q0 = P + N * (0.03 + 0.004 * P.z);\n"
     "  float tmax = uSsr.y;\n"
     "  if (R.z < 0.0) tmax = min(tmax, (0.3 - q0.z) / R.z);\n"
     "  if (tmax < 0.1) return;\n"
@@ -728,7 +699,7 @@ static const char FS_SSR_SRC[] =
     "  vec2 p0 = toPx(q0);\n"
     "  vec2 dd = toPx(q1) - p0;\n"
     "  float k0 = 1.0 / q0.z;\n"
-    "  float k1 = 1.0 / q1.z;\n"                             /* 1/z is linear along a screen-space line */
+    "  float k1 = 1.0 / q1.z;\n"
     "  vec2 tb = vec2(1e9);\n"
     "  if (dd.x >  1e-3) tb.x = (uSize.x - 1.0 - p0.x) / dd.x;\n"
     "  if (dd.x < -1e-3) tb.x = (1.0 - p0.x) / dd.x;\n"
@@ -736,36 +707,35 @@ static const char FS_SSR_SRC[] =
     "  if (dd.y < -1e-3) tb.y = (1.0 - p0.y) / dd.y;\n"
     "  float smax = clamp(min(tb.x, tb.y), 0.0, 1.0);\n"
     "  float lpx = length(dd) * smax;\n"
-    /* ---- march */
     "  bool hit = false;\n"
     "  float sHit = 0.0;\n"
     "  if (lpx >= 2.0) {\n"
     "    int n = int(clamp(uSsr.z + 0.5, 4.0, 64.0));\n"
-    "    n = min(n, int(lpx * 0.5) + 2);\n"                   /* never more than one sample per 2 px */
+    "    n = min(n, int(lpx * 0.5) + 2);\n"
     "    float inv = 1.0 / float(n);\n"
     "    float jit = ign(gl_FragCoord.xy);\n"
     "    float sPrev = 0.0;\n"
     "    float rzPrev = q0.z;\n"
-    "    float dPrev = -1.0;\n"                               /* the start point is in front of the surface by construction */
+    "    float dPrev = -1.0;\n"
     "    for (int i = 0; i < n; i++) {\n"
     "      float u = (float(i) + 0.5 + 0.5 * jit) * inv;\n"
-    "      float s = smax * (0.35 * u + 0.65 * u * u);\n"     /* dense near the pixel, sparse far away */
+    "      float s = smax * (0.35 * u + 0.65 * u * u);\n"
     "      float rz = 1.0 / (k0 + (k1 - k0) * s);\n"
-    "      float df = rz - zAt(ivec2(p0 + dd * s));\n"        /* > 0: the ray is behind the visible surface */
-    "      float th = abs(rz - rzPrev) + 0.12 + 0.04 * rz;\n" /* thickness: what one step can cross, plus a little */
+    "      float df = rz - zAt(ivec2(p0 + dd * s));\n"
+    "      float th = abs(rz - rzPrev) + 0.12 + 0.04 * rz;\n"
     "      if (df > 0.0 && df < th && dPrev <= 0.0) {\n"
     "        float sa = sPrev;\n"
     "        float sb = s;\n"
-    "        for (int b = 0; b < 6; b++) {\n"                 /* bisection between 'in front' and 'behind' */
+    "        for (int b = 0; b < 6; b++) {\n"
     "          float sm = 0.5 * (sa + sb);\n"
     "          float dm = 1.0 / (k0 + (k1 - k0) * sm) - zAt(ivec2(p0 + dd * sm));\n"
     "          if (dm > 0.0) sb = sm; else sa = sm;\n"
     "        }\n"
     "        ivec2 hp = ivec2(p0 + dd * sb);\n"
     "        float db = 1.0 / (k0 + (k1 - k0) * sb) - zAt(hp);\n"
-    "        if (db < th) {\n"                                /* a real surface, not the edge of a nearer object */
+    "        if (db < th) {\n"
     "          vec3 Nh = nrmFrom(hp, posAt(hp));\n"
-    "          if (dot(Nh, R) < 0.05) { hit = true; sHit = sb; break; }\n"   /* the surface must face the ray */
+    "          if (dot(Nh, R) < 0.05) { hit = true; sHit = sb; break; }\n"
     "        }\n"
     "      }\n"
     "      dPrev = df;\n"
@@ -773,40 +743,21 @@ static const char FS_SSR_SRC[] =
     "      rzPrev = rz;\n"
     "    }\n"
     "  }\n"
-    /* ---- colour at the hit, glossy and edge-faded; m = how much to fade over to the far environment (1 = no hit) */
-    "  vec3 hitAcc = vec3(0.0);\n"
-    "  float m = 1.0;\n"
     "  if (hit) {\n"
     "    vec2 hpx = p0 + dd * sHit;\n"
-    "    ivec2 hp = ivec2(hpx);\n"
-    "    int rb = int(clamp(0.5 + 0.04 * length(dd) * sHit, 0.0, 5.0));\n"
-    "    vec3 col = texelFetch(uScene, clampP(hp), 0).rgb * 0.4;\n"
-    "    col += (texelFetch(uScene, clampP(hp + ivec2(rb, 0)), 0).rgb + texelFetch(uScene, clampP(hp - ivec2(rb, 0)), 0).rgb\n"
-    "          + texelFetch(uScene, clampP(hp + ivec2(0, rb)), 0).rgb + texelFetch(uScene, clampP(hp - ivec2(0, rb)), 0).rgb) * 0.15;\n"
-    "    float rzh = 1.0 / (k0 + (k1 - k0) * sHit);\n"
-    "    vec3 qh = vec3((hpx / uSize.xy * 2.0 - 1.0) * uProj.xy * rzh, rzh);\n"
-    "    hitAcc = col * edgeFade(hpx / uSize.xy);\n"
-    "    m = smoothstep(0.55, 1.0, length(qh - q0) / uSsr.y);\n"
-    "  }\n"
-    /* ---- far environment: the pixel the ray direction points at, if that is on screen and clearly farther than the ray reached */
-    "  vec3 envAcc = vec3(0.0);\n"
-    "  if (m > 0.0 && R.z > 0.08) {\n"
-    "    vec2 uv = toPx(R) / uSize.xy;\n"
-    "    uv.y = min(uv.y, 0.96);\n"                          /* mirror direction above the top of the screen: take the top row's sky */
-    "    if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0) {\n"
-    "      ivec2 ep = ivec2(uv * uSize.xy);\n"
-    "      float ez = zAt(ep);\n"
-    "      float rzEnd = q1.z;\n"
-    "      float ok = smoothstep(rzEnd * 1.1 + 2.0, rzEnd * 1.4 + 8.0, ez);\n"
-    "      float ef = smoothstep(0.0, 0.08, min(uv.x, 1.0 - uv.x)) * smoothstep(0.0, 0.08, uv.y);\n"
-    "      envAcc = texelFetch(uScene, ep, 0).rgb * ok * ef;\n"
+    "    vec2 huv = hpx / uSize.xy;\n"
+    "    float edge = edgeFade(huv);\n"                           /* fade out if the hit is near the screen edge */
+    "    if (edge > 0.0) {\n"
+    "      ivec2 hp = ivec2(hpx);\n"
+    "      int rb = int(clamp(0.5 + 0.04 * length(dd) * sHit, 0.0, 5.0));\n"
+    "      vec3 col = texelFetch(uScene, clampP(hp), 0).rgb * 0.4;\n"
+    "      col += (texelFetch(uScene, clampP(hp + ivec2(rb, 0)), 0).rgb + texelFetch(uScene, clampP(hp - ivec2(rb, 0)), 0).rgb\n"
+    "            + texelFetch(uScene, clampP(hp + ivec2(0, rb)), 0).rgb + texelFetch(uScene, clampP(hp - ivec2(0, rb)), 0).rgb) * 0.15;\n"
+    "      float wf = 1.0 - exp(-wgt);\n"
+    "      oColor = vec4(col * (1.0 - base) * wf * edge, 1.0);\n"
     "    }\n"
     "  }\n"
-    "  vec3 acc = mix(hitAcc, envAcc, m);\n"
-    "  float wf = 1.0 - exp(-wgt);\n"                         /* soft saturation: intensity 2 is stronger than 1, never clips */
-    "  oColor = vec4(acc * (1.0 - base) * wf, 1.0);\n"        /* screen blend: base + refl never exceeds 1 */
     "}\n";
-
 /* pass 3: second blur direction + apply to the scene colour (or show a debug view) */
 static const char FS_COMP_SRC[] =
     GLSL_HDR GLSL_COMMON
