@@ -25,7 +25,6 @@
 #define FXB_MODULE_T reshadefx::effect_module
 #endif
 
-/* value of __RESHADE__ (major * 10000 + minor * 100 + revision); resa_fx_consts.h calls it FXK_RESHADE_VERSION */
 #ifndef FXB_RESHADE_VERSION
 #ifdef FXK_RESHADE_VERSION
 #define FXB_RESHADE_VERSION FXK_RESHADE_VERSION
@@ -42,15 +41,15 @@
 
 namespace {
 
-/* ================================================================== the reshadefx back-end  [reshadefx API] */
+/* ================================================================== the reshadefx back-end */
 #if defined(FXB_TASK_NOTE_API) && FXB_TASK_NOTE_API
-struct FxbCodegen {                                    /* the shapes named in the hand-over note */
-    reshadefx::codegen_glsl impl{ true };              /* true = GLES */
+struct FxbCodegen {
+    reshadefx::codegen_glsl impl{ true };
     reshadefx::codegen *base() { return &impl; }
     std::string entry(const std::string &name, bool vertex) { return impl.finalize_code_for_entry_point(name, vertex); }
 };
 #else
-struct FxbCodegen {                                    /* the shapes resa_fx_conv.inc documents */
+struct FxbCodegen {
     std::unique_ptr<reshadefx::codegen> impl{ reshadefx::create_codegen_glsl(300, true, false, false, false, false, true) };
     reshadefx::codegen *base() { return impl.get(); }
     std::string entry(const std::string &name, bool) { return impl->finalize_code_for_entry_point(name); }
@@ -105,10 +104,6 @@ int fxb_glsl_comps(const char *t)
     if (sscanf(t, "mat%d", &c) == 1) return c * c;
     return 0;
 }
-
-template <class T> auto fxb_first(const T &v, int) -> decltype(v[0]) { return v[0]; }
-template <class T> const T &fxb_first(const T &v, long) { return v; }
-template <class T> auto fxb_rt0(const T &v) -> decltype(fxb_first(v, 0)) { return fxb_first(v, 0); }
 
 int fxb_semantic_of(const std::string &s)
 {
@@ -171,9 +166,8 @@ template <class M> int fxb_find_tex(const M &mod, const std::string &n)
     return -1;
 }
 
-template <class M> const reshadefx::sampler_desc *fxb_find_sampler(const M &mod, int unit, const char *name)
+template <class M> const reshadefx::sampler *fxb_find_sampler(const M &mod, const char *name)
 {
-    for (const auto &s : mod.samplers) if ((int)s.binding == unit) return &s;
     for (const auto &s : mod.samplers) if (s.unique_name == name) return &s;
     return nullptr;
 }
@@ -355,10 +349,10 @@ bool fxb_samplers(const FXB_MODULE_T &mod, const FxcOut &o, FxPassDesc &pd, cons
         for (int k = 0; k < pd.nbind; k++) if (pd.bind[k].unit == s.unit) { have = true; break; }
         if (have) continue;
         if (pd.nbind >= FXM_MAX_SMP) { why = at + ": more than " + std::to_string(FXM_MAX_SMP) + " textures are sampled by this pass"; return false; }
-        const reshadefx::sampler_desc *si = fxb_find_sampler(mod, s.unit, s.name);
-        if (!si) { why = at + ": sampler '" + s.name + "' (binding " + std::to_string(s.unit) + ") is not in the module"; return false; }
-        const int tex = fxb_find_tex(mod, si->texture);
-        if (tex < 0) { why = at + ": sampler '" + s.name + "' reads texture '" + si->texture + "', which is not in the module"; return false; }
+        const reshadefx::sampler *si = fxb_find_sampler(mod, s.name);
+        if (!si) { why = at + ": sampler '" + s.name + "' is not in the module"; return false; }
+        const int tex = fxb_find_tex(mod, si->texture_name);
+        if (tex < 0) { why = at + ": sampler '" + s.name + "' reads texture '" + si->texture_name + "', which is not in the module"; return false; }
         FxBind &b = pd.bind[pd.nbind++];
         b.unit = s.unit;
         b.tex = tex;
@@ -368,7 +362,7 @@ bool fxb_samplers(const FXB_MODULE_T &mod, const FxcOut &o, FxPassDesc &pd, cons
         b.min_lod = si->min_lod;
         b.max_lod = si->max_lod;
         b.lod_bias = si->lod_bias;
-        b.srgb = 0; /* DuckStation's fork doesn't expose srgb on sampler_desc */
+        b.srgb = si->srgb ? 1 : 0;
         memcpy(b.name, s.name, FXM_NAME);
     }
     return true;
@@ -404,14 +398,14 @@ bool fxb_pass(const FXB_MODULE_T &mod, FxbCodegen &cg, const T &tech, size_t k, 
     pd.clear      = pi.clear_render_targets ? 1 : 0;
     pd.gen_mips   = pi.generate_mipmaps ? 1 : 0;
     pd.srgb_write = pi.srgb_write_enable ? 1 : 0;
-    pd.blend      = fxb_rt0(pi.blend_enable) ? 1 : 0;
-    pd.src_c      = static_cast<int>(fxb_rt0(pi.src_blend));
-    pd.dst_c      = static_cast<int>(fxb_rt0(pi.dest_blend));
-    pd.op_c       = static_cast<int>(fxb_rt0(pi.blend_op));
-    pd.src_a      = static_cast<int>(fxb_rt0(pi.src_blend_alpha));
-    pd.dst_a      = static_cast<int>(fxb_rt0(pi.dest_blend_alpha));
-    pd.op_a       = static_cast<int>(fxb_rt0(pi.blend_op_alpha));
-    pd.wmask      = static_cast<int>(fxb_rt0(pi.color_write_mask)) & 0xF;
+    pd.blend      = pi.blend_enable[0] ? 1 : 0;
+    pd.src_c      = static_cast<int>(pi.blend_src[0]);
+    pd.dst_c      = static_cast<int>(pi.blend_dst[0]);
+    pd.op_c       = static_cast<int>(pi.blend_op[0]);
+    pd.src_a      = static_cast<int>(pi.blend_src_alpha[0]);
+    pd.dst_a      = static_cast<int>(pi.blend_dst_alpha[0]);
+    pd.op_a       = static_cast<int>(pi.blend_op_alpha[0]);
+    pd.wmask      = static_cast<int>(pi.write_mask[0]) & 0xF;
     pd.stencil    = pi.stencil_enable ? 1 : 0;
     pd.topo       = static_cast<int>(pi.topology);
     pd.nverts     = (int)pi.num_vertices;
@@ -494,7 +488,7 @@ int fxb_build(const FxCompileReq *req, FxModule *out, std::string &why)
         if (!parser.parse(std::move(pp.output()), cg.base())) { why = "parser: " + fxb_trim(parser.errors()); return 0; }
     }
 
-    FXB_MODULE_T &mod = cg.base()->module();
+    const FXB_MODULE_T &mod = cg.base()->module();
     if (mod.techniques.empty()) { why = "the effect declares no technique"; return 0; }
 
     FxbModuleGuard g;
