@@ -1,23 +1,28 @@
 /*
  * resa_fx_bridge.cpp  --  compiler bridge of the ReShade-FX runtime:  .fx file  ->  FxModule   (the contract is resa_fx_api.h)
  *
- *   read .fx -> reshadefx::preprocessor -> reshadefx::parser -> GLSL ES codegen -> write_result(module)
+ *   read .fx -> reshadefx::preprocessor -> reshadefx::parser -> GLSL ES codegen -> codegen->module()
  *   per pass:  finalize_code_for_entry_point(vs | ps) -> fxc_convert() (resa_fx_conv.inc) -> strdup -> FxPassDesc.vs / .ps
  *
  * Contract: returns 1 and an FxModule that the caller releases with fxm_free(), or 0 with *out left zeroed and a one-paragraph reason in err.
  *           Every pointer inside FxModule is calloc / malloc / strdup (never new), so fxm_free() and the C test double can free() them.
  *
- * reshadefx API assumptions (no header was at hand; everything that touches the library is in FxbCodegen, fxb_build(), and the
- * templates over `mod`, so a signature that differs in the vendored fork is a one-line fix):
+ * reshadefx API.  Everything that reads the module is written against effect_module.hpp of DuckStation's dep/reshadefx, with its exact names:
+ *   - the module is reshadefx::effect_module; its elements are reshadefx::texture, sampler, uniform, technique, pass and annotation.
+ *   - a sampler carries no binding (pass::sampler_bindings holds those per pass): the sampler of the converted GLSL is found by unique_name.
+ *   - pass::blend_enable, source_color_blend_factor, dest_color_blend_factor, color_blend_op, source_alpha_blend_factor, dest_alpha_blend_factor,
+ *     alpha_blend_op and render_target_write_mask are arrays with one entry per render target; render target 0 is used.
+ *   - texture::semantic is a std::string ("COLOR" / "DEPTH").
+ * effect_preprocessor.hpp, effect_parser.hpp, effect_codegen.hpp and effect_expression.hpp were not at hand, so these stay assumptions (all of them
+ * in FxbCodegen, fxb_defines(), fxb_build() and the annotation helpers):
  *   - Codegen.  resa_fx_conv.inc documents the back-end as  create_codegen_glsl(version = 300, gles = true, vulkan_semantics = false,
  *     debug_info = false, uniforms_to_spec_constants = false, enable_16bit_types = false, flip_vert_y = true)  and the source as
  *     std::string codegen::finalize_code_for_entry_point(name).  fxc_convert() hard-fails on anything else (non-ES #version, 16-bit types).
  *     The hand-over note instead says  reshadefx::codegen_glsl codegen(true)  and  finalize_code_for_entry_point(name, is_vertex):
  *     build with -DFXB_TASK_NOTE_API=1 for those shapes.  Only FxbCodegen changes.
- *   - Module type is reshadefx::module; for the renamed one build with -DFXB_MODULE_T=reshadefx::effect_module.
- *   - finalize_code_for_entry_point() is called AFTER write_result() (which only moves the module out; the function bodies stay in the codegen).
- *   - Annotations are std::vector<reshadefx::annotation>; texture_info::semantic is a string ("COLOR" / "DEPTH") or an enum with
- *     ::color / ::depth; the blend / write-mask fields of a pass are scalars or per-render-target arrays (render target 0 is used).
+ *   - The module is read in place with  codegen::module()  after the parse, there is no write_result().  The function bodies that
+ *     finalize_code_for_entry_point() needs stay in the codegen, so the codegen outlives every use of the module.
+ *   - reshadefx::type::t_bool / t_int / t_uint / t_float / t_string, type::rows / cols / array_length, constant::as_float / as_int / as_uint.
  *
  * Build: C++17, include path of dep/reshadefx/include, resa_fx_api.h and resa_fx_conv.inc next to this file, link reshadefx.
  */
@@ -29,20 +34,19 @@
 #include <iterator>
 #include <memory>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include "reshadefx/effect_module.hpp"
-#include "reshadefx/effect_preprocessor.hpp"
-#include "reshadefx/effect_parser.hpp"
-#include "reshadefx/effect_codegen.hpp"
+#include "effect_module.hpp"
+#include "effect_preprocessor.hpp"
+#include "effect_parser.hpp"
+#include "effect_codegen.hpp"
 
 #include "resa_fx_api.h"
 #include "resa_fx_conv.inc"
 
 #ifndef FXB_MODULE_T
-#define FXB_MODULE_T reshadefx::module
+#define FXB_MODULE_T reshadefx::effect_module
 #endif
 
 /* value of __RESHADE__ (major * 10000 + minor * 100 + revision); resa_fx_consts.h calls it FXK_RESHADE_VERSION */
@@ -131,23 +135,16 @@ int fxb_glsl_comps(const char *t)
     return 0;
 }
 
-/* blend factors / ops / write mask are per render target in newer reshadefx and plain scalars in older ones: take render target 0 either way */
-template <class T> auto fxb_first(const T &v, int) -> decltype(v[0]) { return v[0]; }
-template <class T> const T &fxb_first(const T &v, long) { return v; }
-template <class T> auto fxb_rt0(const T &v) -> decltype(fxb_first(v, 0)) { return fxb_first(v, 0); }
-
-/* texture semantic: a string in upstream reshadefx, an enum in some forks */
+/* texture::semantic is a std::string */
 int fxb_semantic_of(const std::string &s)
 {
     if (s == "DEPTH") return FXSEM_DEPTH;
     if (s == "COLOR") return FXSEM_COLOR;
     return FXSEM_NONE;
 }
-template <class E, class = typename std::enable_if<std::is_enum<E>::value>::type>
-int fxb_semantic_of(E s) { return s == E::depth ? FXSEM_DEPTH : (s == E::color ? FXSEM_COLOR : FXSEM_NONE); }
 
 /* ---- annotations ---- */
-template <class L> const reshadefx::annotation *fxb_ann(const L &list, const char *name)
+const reshadefx::annotation *fxb_ann(const std::vector<reshadefx::annotation> &list, const char *name)
 {
     for (const auto &a : list)
         if (a.name == name) return &a;
@@ -194,7 +191,7 @@ void fxb_items(char (&dst)[512], const std::string &s)
 }
 
 /* ---- lookups in the module ---- */
-template <class M> int fxb_find_tex(const M &mod, const std::string &n)          /* samplers and passes name a texture by unique_name */
+int fxb_find_tex(const FXB_MODULE_T &mod, const std::string &n)                  /* samplers and passes name a texture by unique_name */
 {
     if (n.empty()) return -1;
     for (size_t i = 0; i < mod.textures.size(); i++) if (mod.textures[i].unique_name == n) return (int)i;
@@ -202,10 +199,10 @@ template <class M> int fxb_find_tex(const M &mod, const std::string &n)         
     return -1;
 }
 
-template <class M> const reshadefx::sampler_info *fxb_find_sampler(const M &mod, int unit, const char *name)
+/* the converted source names every sampler by its unique_name; reshadefx::sampler has no binding (that lives per pass in pass::sampler_bindings) */
+const reshadefx::sampler *fxb_find_sampler(const FXB_MODULE_T &mod, const char *name)
 {
-    for (const auto &s : mod.samplers) if ((int)s.binding == unit) return &s;   /* the binding the converted source declared */
-    for (const auto &s : mod.samplers) if (s.unique_name == name) return &s;
+    for (const reshadefx::sampler &s : mod.samplers) if (s.unique_name == name) return &s;
     return nullptr;
 }
 
@@ -286,7 +283,7 @@ bool fxb_textures(const FXB_MODULE_T &mod, const FxCompileReq *req, FxModule &m,
     m.tex = (FxTexDesc *)calloc(n, sizeof(FxTexDesc));
     if (!m.tex) { why = "out of memory"; return false; }
     for (size_t i = 0; i < n; i++) {
-        const reshadefx::texture_info &t = mod.textures[i];
+        const reshadefx::texture &t = mod.textures[i];
         FxTexDesc &d = m.tex[i];
         std::string s;
         if (!fxb_cpy(d.name, t.name)) { why = "texture name too long: " + t.name; return false; }
@@ -312,7 +309,7 @@ bool fxb_uniforms(const FXB_MODULE_T &mod, FxModule &m, std::string &why)
 
     int cursor = 0;
     for (size_t i = 0; i < n; i++) {
-        const reshadefx::uniform_info &ui = mod.uniforms[i];
+        const reshadefx::uniform &ui = mod.uniforms[i];
         const auto &an = ui.annotations;
         FxUniformDesc &d = m.uni[i];
         std::string s;
@@ -397,7 +394,7 @@ bool fxb_samplers(const FXB_MODULE_T &mod, const FxcOut &o, FxPassDesc &pd, cons
         for (int k = 0; k < pd.nbind; k++) if (pd.bind[k].unit == s.unit) { have = true; break; }
         if (have) continue;                                            /* the other stage reads it too */
         if (pd.nbind >= FXM_MAX_SMP) { why = at + ": more than " + std::to_string(FXM_MAX_SMP) + " textures are sampled by this pass"; return false; }
-        const reshadefx::sampler_info *si = fxb_find_sampler(mod, s.unit, s.name);
+        const reshadefx::sampler *si = fxb_find_sampler(mod, s.name);
         if (!si) { why = at + ": sampler '" + s.name + "' (binding " + std::to_string(s.unit) + ") is not in the module"; return false; }
         const int tex = fxb_find_tex(mod, si->texture_name);
         if (tex < 0) { why = at + ": sampler '" + s.name + "' reads texture '" + si->texture_name + "', which is not in the module"; return false; }
@@ -425,10 +422,9 @@ bool fxb_stage(FxbCodegen &cg, const std::string &entry, bool is_ps, FxbConv &cx
     return true;
 }
 
-template <class T>                                                     /* T = reshadefx's technique type */
-bool fxb_pass(const FXB_MODULE_T &mod, FxbCodegen &cg, const T &tech, size_t k, FxPassDesc &pd, FxModule &m, bool &named, std::string &why)
+bool fxb_pass(const FXB_MODULE_T &mod, FxbCodegen &cg, const reshadefx::technique &tech, size_t k, FxPassDesc &pd, FxModule &m, bool &named, std::string &why)
 {
-    const auto &pi = tech.passes[k];
+    const reshadefx::pass &pi = tech.passes[k];
     std::string at = "technique '" + tech.name + "', pass " + std::to_string(k + 1);
     if (!pi.name.empty()) at += " ('" + pi.name + "')";
 
@@ -446,14 +442,14 @@ bool fxb_pass(const FXB_MODULE_T &mod, FxbCodegen &cg, const T &tech, size_t k, 
     pd.clear      = pi.clear_render_targets ? 1 : 0;
     pd.gen_mips   = pi.generate_mipmaps ? 1 : 0;
     pd.srgb_write = pi.srgb_write_enable ? 1 : 0;
-    pd.blend      = fxb_rt0(pi.blend_enable) ? 1 : 0;                  /* reshadefx::pass_blend_factor / pass_blend_op values, as they are */
-    pd.src_c      = static_cast<int>(fxb_rt0(pi.src_blend));
-    pd.dst_c      = static_cast<int>(fxb_rt0(pi.dest_blend));
-    pd.op_c       = static_cast<int>(fxb_rt0(pi.blend_op));
-    pd.src_a      = static_cast<int>(fxb_rt0(pi.src_blend_alpha));
-    pd.dst_a      = static_cast<int>(fxb_rt0(pi.dest_blend_alpha));
-    pd.op_a       = static_cast<int>(fxb_rt0(pi.blend_op_alpha));
-    pd.wmask      = static_cast<int>(fxb_rt0(pi.color_write_mask)) & 0xF;
+    pd.blend      = pi.blend_enable[0] ? 1 : 0;                        /* render target 0; reshadefx::blend_factor / blend_op values, as they are */
+    pd.src_c      = static_cast<int>(pi.source_color_blend_factor[0]);
+    pd.dst_c      = static_cast<int>(pi.dest_color_blend_factor[0]);
+    pd.op_c       = static_cast<int>(pi.color_blend_op[0]);
+    pd.src_a      = static_cast<int>(pi.source_alpha_blend_factor[0]);
+    pd.dst_a      = static_cast<int>(pi.dest_alpha_blend_factor[0]);
+    pd.op_a       = static_cast<int>(pi.alpha_blend_op[0]);
+    pd.wmask      = static_cast<int>(pi.render_target_write_mask[0]) & 0xF;
     pd.stencil    = pi.stencil_enable ? 1 : 0;
     pd.topo       = static_cast<int>(pi.topology);
     pd.nverts     = (int)pi.num_vertices;
@@ -498,7 +494,7 @@ bool fxb_techniques(const FXB_MODULE_T &mod, FxbCodegen &cg, FxModule &m, std::s
     bool named = (m.nuni == 0);                                        /* glnames are taken from the first converted stage */
     size_t flat = 0;
     for (size_t ti = 0; ti < mod.techniques.size(); ti++) {
-        const auto &tech = mod.techniques[ti];
+        const reshadefx::technique &tech = mod.techniques[ti];
         FxTechDesc &td = m.tech[ti];
         std::string s;
         float f = 1.f;
@@ -543,9 +539,8 @@ int fxb_build(const FxCompileReq *req, FxModule *out, std::string &why)
         if (!parser.parse(std::move(pp.output()), cg.base())) { why = "parser: " + fxb_trim(parser.errors()); return 0; }
     }
 
-    /* 3. the module  [reshadefx API] */
-    FXB_MODULE_T mod;
-    cg.base()->write_result(mod);
+    /* 3. the module, read in place from the codegen (which stays alive until the end of this function)  [reshadefx API] */
+    const FXB_MODULE_T &mod = cg.base()->module();
     if (mod.techniques.empty()) { why = "the effect declares no technique"; return 0; }
 
     /* 4. textures, uniforms, then techniques / passes (the converted shaders name the uniforms and the samplers) */
