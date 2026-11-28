@@ -1,4 +1,3 @@
-cd /home/claude/work && cat > resa_fx_consts.h <<'EOF'
 /*
  * resa_fx_consts.h  --  GL constants, reshadefx enum values and the PURE mapping tables of the ReShade-FX runtime.
  *
@@ -8,9 +7,9 @@ cd /home/claude/work && cat > resa_fx_consts.h <<'EOF'
  * NEEDS the GL typedefs (GLenum, GLint ...) to be visible first: resa_ao.c has them, the tests include tests/gl_min.h.
  * The constants are named FXGL_<name> (resa_ao.c's own list is GLC_<name>); both are the plain GL values, there is no clash.
  *
- * reshadefx values below are the ones of reshadefx::effect_module.hpp (filter_mode, texture_address_mode, pass_blend_op, pass_blend_factor,
- * primitive_topology).  They come from the upstream header; tests/test_fx_consts.c PINS them, so a different value in the vendored fork shows up
- * as one failing test line, not as a silently wrong picture.  >>> VERIFY AGAINST dep/reshadefx/include/effect_module.hpp WHEN THE SOURCE IS AT HAND <<<
+ * reshadefx values below are the ones of reshadefx::effect_module.hpp (filter_mode, texture_address_mode, blend_op, blend_factor,
+ * primitive_topology, texture_format), checked against the header of DuckStation's dep/reshadefx.  tests/test_fx_consts.c PINS them, so a different
+ * value after a later sync of the vendored fork shows up as one failing test line, not as a silently wrong picture.
  */
 #ifndef RESA_FX_CONSTS_H
 #define RESA_FX_CONSTS_H
@@ -37,8 +36,7 @@ cd /home/claude/work && cat > resa_fx_consts.h <<'EOF'
     /* primitives, limits, queries */ \
     X(POINTS, 0x0000) X(LINES, 0x0001) X(LINE_STRIP, 0x0003) X(TRIANGLE_STRIP, 0x0005) \
     X(MAX_COLOR_ATTACHMENTS, 0x8CDF) X(MAX_DRAW_BUFFERS, 0x8824) X(MAX_TEXTURE_SIZE, 0x0D33) X(MAX_TEXTURE_IMAGE_UNITS, 0x8872) \
-    X(EXTENSIONS, 0x1F03) X(COLOR_CLEAR_VALUE, 0x0C22) X(FRAMEBUFFER_UNSUPPORTED, 0x8CDD) \
-    X(TEXTURE_2D_ARRAY_UNUSED_PLACEHOLDER_DO_NOT_USE, 0x8C1A)
+    X(EXTENSIONS, 0x1F03) X(COLOR_CLEAR_VALUE, 0x0C22) X(FRAMEBUFFER_UNSUPPORTED, 0x8CDD)
 
 enum {
 #define X(n, v) FXGL_##n = v,
@@ -60,8 +58,10 @@ static const FxkGlConst fxk_gl_table[] __attribute__((unused)) = {
 enum { FXK_ADDR_WRAP = 1, FXK_ADDR_MIRROR = 2, FXK_ADDR_CLAMP = 3, FXK_ADDR_BORDER = 4 };
 enum { FXK_FILT_MIP_LINEAR = 0x01, FXK_FILT_MAG_LINEAR = 0x04, FXK_FILT_MIN_LINEAR = 0x10 };
 enum { FXK_BOP_ADD = 1, FXK_BOP_SUBTRACT = 2, FXK_BOP_REVERSE_SUBTRACT = 3, FXK_BOP_MIN = 4, FXK_BOP_MAX = 5 };
-enum { FXK_BF_ZERO = 0, FXK_BF_ONE = 1, FXK_BF_SRC_COLOR = 2, FXK_BF_ONE_MINUS_SRC_COLOR = 3, FXK_BF_SRC_ALPHA = 4, FXK_BF_ONE_MINUS_SRC_ALPHA = 5,
-       FXK_BF_DST_ALPHA = 6, FXK_BF_ONE_MINUS_DST_ALPHA = 7, FXK_BF_DST_COLOR = 8, FXK_BF_ONE_MINUS_DST_COLOR = 9 };
+/* reshadefx::blend_factor, in the order the header declares it: zero, one, source_color, one_minus_source_color, dest_color, one_minus_dest_color,
+ * source_alpha, one_minus_source_alpha, dest_alpha, one_minus_dest_alpha */
+enum { FXK_BF_ZERO = 0, FXK_BF_ONE = 1, FXK_BF_SRC_COLOR = 2, FXK_BF_ONE_MINUS_SRC_COLOR = 3, FXK_BF_DST_COLOR = 4, FXK_BF_ONE_MINUS_DST_COLOR = 5,
+       FXK_BF_SRC_ALPHA = 6, FXK_BF_ONE_MINUS_SRC_ALPHA = 7, FXK_BF_DST_ALPHA = 8, FXK_BF_ONE_MINUS_DST_ALPHA = 9 };
 enum { FXK_TOPO_POINTS = 1, FXK_TOPO_LINES = 2, FXK_TOPO_LINE_STRIP = 3, FXK_TOPO_TRIANGLES = 4, FXK_TOPO_TRIANGLE_STRIP = 5 };
 
 /* what the bridge writes into __RESHADE__ (major * 10000 + minor * 100 + revision).  Effects test it with  #if __RESHADE__ >= 50000 .
@@ -200,37 +200,3 @@ static inline int fxk_std140(int rows, int cols, int array_len, int *align, int 
 }
 
 #endif /* RESA_FX_CONSTS_H */
-EOF
-sed -i '/TEXTURE_2D_ARRAY_UNUSED_PLACEHOLDER_DO_NOT_USE/d' resa_fx_consts.h
-sed -i 's|X(EXTENSIONS, 0x1F03) X(COLOR_CLEAR_VALUE, 0x0C22) X(FRAMEBUFFER_UNSUPPORTED, 0x8CDD) \\|X(EXTENSIONS, 0x1F03) X(COLOR_CLEAR_VALUE, 0x0C22) X(FRAMEBUFFER_UNSUPPORTED, 0x8CDD)|' resa_fx_consts.h
-sed -n '20,48p' resa_fx_consts.h
-Output
-    X(R8, 0x8229) X(RG8, 0x822B) X(R16F, 0x822D) X(R32F, 0x822E) X(RG16F, 0x822F) X(RG32F, 0x8230) \
-    X(R32I, 0x8235) X(R32UI, 0x8236) X(RGBA16F, 0x881A) X(RGBA32F, 0x8814) X(RGB10_A2, 0x8059) \
-    X(R16_EXT, 0x822A) X(RG16_EXT, 0x822C) X(RGBA16_EXT, 0x805B) \
-    X(RED, 0x1903) X(RG, 0x8227) X(RED_INTEGER, 0x8D94) X(RGBA_INTEGER, 0x8D99) \
-    X(UNSIGNED_SHORT, 0x1403) X(INT, 0x1404) X(UNSIGNED_INT, 0x1405) X(FLOAT, 0x1406) X(HALF_FLOAT, 0x140B) \
-    X(UNSIGNED_INT_2_10_10_10_REV, 0x8368) \
-    /* sampler state */ \
-    X(NEAREST_MIPMAP_NEAREST, 0x2700) X(LINEAR_MIPMAP_NEAREST, 0x2701) X(NEAREST_MIPMAP_LINEAR, 0x2702) X(LINEAR_MIPMAP_LINEAR, 0x2703) \
-    X(REPEAT, 0x2901) X(MIRRORED_REPEAT, 0x8370) \
-    X(TEXTURE_MIN_LOD, 0x813A) X(TEXTURE_MAX_LOD, 0x813B) X(TEXTURE_BASE_LEVEL, 0x813C) X(TEXTURE_MAX_LEVEL, 0x813D) \
-    /* blending */ \
-    X(ZERO, 0) X(ONE, 1) X(SRC_COLOR, 0x0300) X(ONE_MINUS_SRC_COLOR, 0x0301) X(SRC_ALPHA, 0x0302) X(ONE_MINUS_SRC_ALPHA, 0x0303) \
-    X(DST_ALPHA, 0x0304) X(ONE_MINUS_DST_ALPHA, 0x0305) X(DST_COLOR, 0x0306) X(ONE_MINUS_DST_COLOR, 0x0307) \
-    X(FUNC_ADD, 0x8006) X(MIN, 0x8007) X(MAX, 0x8008) X(FUNC_SUBTRACT, 0x800A) X(FUNC_REVERSE_SUBTRACT, 0x800B) \
-    X(BLEND_EQUATION_RGB, 0x8009) X(BLEND_EQUATION_ALPHA, 0x883D) \
-    X(BLEND_DST_RGB, 0x80C8) X(BLEND_SRC_RGB, 0x80C9) X(BLEND_DST_ALPHA, 0x80CA) X(BLEND_SRC_ALPHA, 0x80CB) \
-    /* primitives, limits, queries */ \
-    X(POINTS, 0x0000) X(LINES, 0x0001) X(LINE_STRIP, 0x0003) X(TRIANGLE_STRIP, 0x0005) \
-    X(MAX_COLOR_ATTACHMENTS, 0x8CDF) X(MAX_DRAW_BUFFERS, 0x8824) X(MAX_TEXTURE_SIZE, 0x0D33) X(MAX_TEXTURE_IMAGE_UNITS, 0x8872) \
-    X(EXTENSIONS, 0x1F03) X(COLOR_CLEAR_VALUE, 0x0C22) X(FRAMEBUFFER_UNSUPPORTED, 0x8CDD)
-
-enum {
-#define X(n, v) FXGL_##n = v,
-    FXK_GL_CONSTS(X)
-#undef X
-    FXGL__END
-};
-
-/* every constant by name, for the tests */
