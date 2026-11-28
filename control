@@ -2,7 +2,7 @@ Package: com.dylbsamp.resa_ao
 Name: resa_ao
 Version: 1.0.0
 Architecture: iphoneos-arm
-Description: Screen-space ambient occlusion (SSAO) for ReSALauncher
+Description: Screen-space ambient occlusion (SSAO) and ReShade FX shader support for ReSALauncher.
 Maintainer: dylbsamp
 Author: dylbsamp
 Section: Tweaks
