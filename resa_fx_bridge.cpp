@@ -23,6 +23,9 @@
  *   - The module is read in place with  codegen::module()  after the parse, there is no write_result().  The function bodies that
  *     finalize_code_for_entry_point() needs stay in the codegen, so the codegen outlives every use of the module.
  *   - reshadefx::type::t_bool / t_int / t_uint / t_float / t_string, type::rows / cols / array_length, constant::as_float / as_int / as_uint.
+ *   - Includes.  reshadefx::preprocessor::set_include_callbacks(exists, read) takes  bool(const std::string &)  and
+ *     bool(const std::string &, std::string &)  (fxb_include_exists / fxb_include_read below).  The default #include reader of
+ *     DuckStation's fork segfaults, so every #include goes through those two.
  *
  * Build: C++17, include path of dep/reshadefx/include, resa_fx_api.h and resa_fx_conv.inc next to this file, link reshadefx.
  */
@@ -519,6 +522,20 @@ void fxb_need_depth(FxModule &m)
 
 /* ================================================================== the whole compile */
 
+/* #include reader for the preprocessor (set_include_callbacks in fxb_build): DuckStation's default one segfaults.
+ * exists = the file can be opened, read = its whole content, byte for byte. */
+static bool fxb_include_exists(const std::string &path) {
+    std::ifstream f(path.c_str());
+    return f.good();
+}
+
+static bool fxb_include_read(const std::string &path, std::string &content) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    content.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    return true;
+}
+
 int fxb_build(const FxCompileReq *req, FxModule *out, std::string &why)
 {
     if (!req || !req->path || !*req->path) { why = "no .fx path given"; return 0; }
@@ -529,6 +546,7 @@ int fxb_build(const FxCompileReq *req, FxModule *out, std::string &why)
 
     reshadefx::preprocessor pp;
     for (const char *const *d = req->inc; d && *d; ++d) pp.add_include_path(std::string(*d));
+    pp.set_include_callbacks(fxb_include_exists, fxb_include_read);
     fxb_defines(pp, req);
     if (!pp.append_string(std::move(text), std::string(req->path))) { why = "preprocessor: " + fxb_trim(pp.errors()); return 0; }
 
