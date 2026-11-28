@@ -33,10 +33,10 @@
 #include <utility>
 #include <vector>
 
-#include "reshadefx/effect_module.hpp"
-#include "reshadefx/effect_preprocessor.hpp"
-#include "reshadefx/effect_parser.hpp"
-#include "reshadefx/effect_codegen.hpp"
+#include "effect_module.hpp"
+#include "effect_preprocessor.hpp"
+#include "effect_parser.hpp"
+#include "effect_codegen.hpp"
 
 #include "resa_fx_api.h"
 #include "resa_fx_conv.inc"
